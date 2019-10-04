@@ -1,0 +1,693 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+
+DSA 6000 Final Project: KDDCup2009 Challenge
+Team Members:
+Jamal Warida
+David Goslin
+John Rogers
+Bader Alrajhi
+Olu Fadare
+ 
+For the KDDCup2009 Challenge, our team has employed a Lean approach of Plan, Do, Check, Act (PDCA) for developing a model to predict customer churn. Our workflow is as follows:
+ - Import Data
+ - Exploretory Data Analysis (EDA)
+ - Data Cleaning
+ - Data Modeling
+ - Model Analysis
+ 
+ Our workflow is predominantly straight fowward with some overlap between EDA and Data Cleaning.
+
+IMPORT DATA
+
+Plan: 
+ - Set working directory 
+ - Load necessary packages
+ - Import data to a dataframe
+
+Do:
+ - Working directory and library imports
+```{r}
+setwd("~/Desktop/FALL2018/DSA6000/DSA6000_project_Team3")
+library(tidyverse)
+library(caret)
+library(readr)
+library(plyr)
+library(vtreat)
+library(ggplot2)
+library(forcats)
+library(class)
+library(readr)
+library(magrittr)
+library(ISLR)
+library(tree)
+library(glmnet)
+library(randomForest)
+library(knitr)
+```
+Do:
+ - Parallelizing
+```{r}
+library(doParallel)
+cl <- makeCluster(detectCores() - 2)   # create a compute cluster using all CPU cores but 2
+clusterEvalQ(cl, library(foreach))
+registerDoParallel(cl)   # register this cluster
+```
+Do:
+ - Common NA Strings
+```{r}
+na_strings <- c(
+  '', 'na', 'n.a', 'n.a.', 'nan', 'n.a.n', 'n.a.n.', 'NA', 'N.A', 'N.A.',  'NaN', 'N.a.N', 'N.a.N.', 'NAN', 'N.A.N', 'N.A.N.', 'nil', 'Nil', 'NIL', 'null', 'Null', 'NULL')
+```
+
+Do:
+ - Import Training & Test Variables Data
+```{r}
+data_train <- read_csv("~/Desktop/FALL2018/DSA6000/DSA6000_project_Team3/orange_small_train.data.csv", na = na_strings)
+data_test <- read_csv("~/Desktop/FALL2018/DSA6000/DSA6000_project_Team3/orange_small_test.data.csv", na = na_strings)
+```
+Do:
+ - Import Response Variables Data
+```{r}
+target_churn <- read_csv("~/Desktop/FALL2018/DSA6000/DSA6000_project_Team3/target_churn.csv", na = na_strings)
+target_appentency <- read_csv("~/Desktop/FALL2018/DSA6000/DSA6000_project_Team3/target_appentency.csv", na = na_strings)
+target_upselling <- read_csv("~/Desktop/FALL2018/DSA6000/DSA6000_project_Team3/target_upselling.csv", na = na_strings)
+```
+
+Check:
+ - Working directory set (see above)
+ - Packages are loaded (see above)
+ - Data in a dataframe
+ 
+```{r}
+class(data_train)
+```
+Act:
+ - NOTE: data is in a tibble (tidyverse), not strictly a dataframe; no action required at this time
+ 
+EXPLORATORY DATA ANALYSIS & DATA CLEANING
+
+Plan: 
+ - Understand variable type and encoding
+ - Evaluate consistency of the data for variable type and NA rate
+ - Understand response class balance
+ - Impute missing values
+ - Encode factor variables as necessary
+ - Change columns types for different modeling techniques as necessary
+
+Do:
+Inspect training data
+```{r}
+table(sapply(data_train, class))
+```
+Check: 
+ - All 230 columns accounted for
+Act: 
+ - Convert character columns to factor columns for inspection
+
+Do (from above):
+ - Convert character variables as factors
+```{r}
+data_train[sapply(data_train, is.character)] <- lapply(data_train[sapply(data_train, is.character)], as.factor)
+table(sapply(data_train, class))
+```
+Check:
+ - All 230 columns accounted for with no 56 factor and 0 numeric
+
+Act:
+ - No action required
+
+Do:
+ - Inspect NA rate
+```{r}
+n <- nrow(data_train)
+na_rate <- apply(data_train, 2, function(x) {sum(is.na(x))/n})
+na_rate_df <- as.data.frame(na_rate)
+na_rate_df <- cbind(newColName = rownames(na_rate_df), na_rate_df)
+rownames(na_rate_df) <- 1:nrow(na_rate_df)
+colnames(na_rate_df) <- c("Variable", "NA_Rate")
+ggplot(data = na_rate_df) + 
+  geom_bar(mapping = aes(x = Variable, y = NA_Rate), stat = "identity") +
+  xlab("Variable") +
+  ylab("NA Rate") +
+  labs(title = "Column Selection")
+```
+
+Do:
+ - Inspect response variables
+```{r}
+resp_vars <- cbind(target_churn, target_appentency, target_upselling)
+resp_sum <- summary(resp_vars) 
+churn_mean <- mean(resp_vars$churn)
+appent_mean <- mean(resp_vars$appentency)
+upsell_mean <- mean(resp_vars$upselling)
+classes_mean <- data.frame("Churn" = churn_mean,
+                          "Appentency" = appent_mean,
+                          "Upsell" = upsell_mean)
+
+classes_plot <- classes_mean %>% 
+  gather('Churn', 'Appentency', 'Upsell',  key = "Name", value = "Mean")
+
+tcs <- summary(target_churn)
+tas <- summary(target_appentency)
+tus <- summary(target_upselling)
+
+cbind(tcs, tas, tus)
+
+ggplot(data = classes_plot) + 
+  geom_bar(mapping = aes(x = classes_plot$Name, y = classes_plot$Mean), stat = "identity") +
+  geom_text(aes(x = Name, y = Mean + .1,    # nudge above top of bar
+                  label = paste0(Mean, '%')),    # prettify
+              position = position_dodge(width = .9), 
+              size = 3) +
+  xlab("Response") +
+  ylab("Class %ff") +
+  labs(title = "Understand Class Imbalances")
+```
+Check:
+ - Variables are no encoded for binary classification
+ 
+ Act:
+ - Encode resposne variables as 0/1
+ 
+ Do (from above):
+ - Encode response variables as 0/1
+```{r}
+target_churn$churn[target_churn$churn == -1] <- 0
+target_appentency$appentency[target_appentency$appentency == -1] <- 0
+target_upselling$upselling[target_upselling$upselling == -1] <- 0
+```
+
+Check:
+ - Check encoding
+```{r}
+tcs1 <- summary(target_churn)
+tas1 <- summary(target_appentency)
+tus1 <- summary(target_upselling)
+
+cbind(tcs1, tas1, tus1)
+
+resp_vars1 <- cbind(target_churn, target_appentency, target_upselling)
+resp_sum1 <- summary(resp_vars1) 
+churn_mean1 <- mean(resp_vars1$churn)
+appent_mean1 <- mean(resp_vars1$appentency)
+upsell_mean1 <- mean(resp_vars1$upselling)
+classes_mean1 <- data.frame("Churn" = churn_mean1,
+                          "Appentency" = appent_mean1,
+                          "Upsell" = upsell_mean1)
+
+classes_plot1 <- classes_mean1 %>% 
+  gather('Churn', 'Appentency', 'Upsell',  key = "Name", value = "Mean")
+
+ggplot(data = classes_plot1) + 
+  geom_bar(mapping = aes(x = classes_plot1$Name, y = classes_plot1$Mean), stat = "identity") +
+  geom_text(aes(x = Name, y = Mean + .1,    # nudge above top of bar
+                  label = paste0(Mean, '')),    # prettify
+              position = position_dodge(width = .9), 
+              size = 3) +
+  xlab("Response") +
+  ylab("Class %ff") +
+  labs(title = "Understand Class Imbalances")
+
+```
+Act:
+ - NOTE: Strong class imbalance of response variables. May effect model performance given most techniques are designed to minimize error, not true positive rate.
+  - No action required at this time
+ 
+Do:
+ - Remove variables with all or excessive NA rate
+```{r}
+ind <- seq(0, 1, 0.05)
+answer <- c()
+
+for (i in ind) {
+na_flag <- ifelse(na_rate <= i, 1, 0)
+col_sub <- na_flag[na_flag == 1]
+col_num <- length(col_sub)
+answer <- append(answer, col_num)
+}
+
+plot(ind, answer, xlab = "Missing Value Allowed %", ylab = "# of Predictors", title(main = "Drop Columns"))
+
+na_flag1 <- ifelse(na_rate <= .2, 1, 0)
+col_sub1 <- na_flag1[na_flag == 1]
+data_train <- data_train[,col_sub1 == 1]
+
+table(sapply(data_train, class))
+```
+Check:
+ - Verify columns were removed
+```{r}
+dim(data_train)
+```
+Act:
+ - No action required at this time
+ 
+Do:
+ - Convert low-count numeric variables to factors
+```{r}
+table(sapply(data_train, class))
+
+data_train[sapply(data_train, function(x) {(length(unique(x)))}) <= 5] <- lapply(data_train[sapply(data_train, function(x) {length(unique(x))}) <= 5], as.factor)
+```
+Check:
+ - Verify a change in column types
+```{r}
+table(sapply(data_train, class))
+```
+Act:
+ - No action required
+ 
+Do:
+ - Maintain visibility of NAs for imputation and modeling by constructing dummy variable matrix for NAs
+```{r}
+df_names <- names(data_train)
+n_len <- nrow(data_train)
+p_len <- ncol(data_train)
+dummy_df <-data.frame(matrix(NA, nrow = n_len, ncol = p_len))
+colnames(dummy_df) <- df_names
+colnames(dummy_df) <- paste(df_names, "_D", sep = "")
+
+
+dummy_df[is.na(data_train)] <- 1
+dummy_df[is.na(dummy_df)] <- 0
+```
+
+Check:
+ - NA count in data_train and count in dummy_df are equal
+```{r}
+sum(is.na(data_train))
+sum(dummy_df == 1)
+```
+
+Act:
+ - No action required at this time
+ 
+Do:
+ - Impute NA values for integer, numeric, and factor variables
+
+Impute values for quantitative variables
+Impute for numeric
+```{r}
+for (i in names(data_train)) {
+ vclass <- class(pull(data_train, i))
+ if (vclass == "numeric"){
+   data_train[is.na(data_train[,i]),i] <- colMeans(data_train[,i],na.rm = TRUE)
+ }
+}
+```
+
+Impute for integer
+Create a function to find the mode of integers excluding NAs
+```{r}
+Modes <- function(x) {
+  ux <- unique(x)
+  tab <- tabulate(match(x, ux))
+  tab[is.na(ux)] <- 0
+  ux[tab == max(tab)]
+  }
+
+
+mode_df <- sapply(data_train, Modes)
+mode_df <- as.data.frame(mode_df)
+mode_df <- cbind(newColName = rownames(mode_df), mode_df)
+rownames(mode_df) <- 1:nrow(mode_df)
+colnames(mode_df) <- c("Variable", "Mode")
+
+n <- mode_df$Variable
+mode_df <- as.data.frame(t(mode_df[,-1]))
+colnames(mode_df) <- n
+
+mode_df_fun <- function (x) {
+  col_name <- names(x)
+  value <- mode_df[1,col_name]
+  return(value)
+}
+```
+
+Impute integer NAs
+```{r}
+for (i in names(data_train)) {
+ vclass <- class(pull(data_train, i))
+ if (vclass == "integer") {
+   data_train[is.na(data_train[,i]),i] <- mode_df[,i]
+ }
+}
+```
+
+Replace NAs with "missing" level
+```{r}
+data_train <- as.data.frame(data_train)
+for (i in names(data_train)) {
+  vclass <- class(data_train[,i])
+  if (vclass == 'factor') {
+    levels(data_train[,i]) <- c(levels(data_train[,i]), 'missing')
+    data_train[is.na(data_train[,i]), i] <- 'missing'
+  }
+}
+```
+
+Check:
+ - Veryify all NAs have been replaced
+```{r}
+sum(is.na(data_train))
+```
+
+Act:
+ - No action required at this time
+
+Do:
+ - Encode variable encoding and type to fit modeling technqiues
+```{r}
+for (i in names(data_train)) {
+  vclass <- class(data_train[,i])
+  if (vclass == "factor") {
+    level_n <- length(levels(data_train[,i]))
+    levels(data_train[,i]) <- 0:(level_n-1)
+  }
+}
+```
+
+Check:
+ - Verify by inspection all levels are numeric
+```{r}
+levels_def <- c()
+for (i in names(data_train)) {
+  vclass <- class(pull(data_train, i))
+  if (vclass == "factor") {
+  level_ <- levels(pull(data_train, i))
+  levels_def <- append(levels_def, level_)
+  }
+}
+levels_def <- as.numeric(levels_def)
+levels_def
+```
+
+Act:
+ - No action required at this time
+ - NOTE: Excessive factor levels may require new encoding - find count of number of columns with a given factor count
+```{r}
+levels_all <- c()
+for (i in names(data_train)) {
+  vclass <- class(pull(data_train, i))
+  if (vclass == "factor") {
+  level_list <- length(levels(pull(data_train, i)))
+  levels_all <- append(levels_all, level_list)
+  }
+}
+levels_all <- as.data.frame(levels_all)
+max(levels_all$levels_all)
+table(levels_all)
+```
+
+Do:
+ - Create two data sets; one that preserves factors and one that converts factor columns to numeric for modeling techniques
+```{r}
+fac_data_train <- data_train
+indx <- sapply(data_train, is.factor)
+data_train[,indx] <- lapply(data_train[,indx], function(x) as.numeric(as.character(x)))
+```
+
+Check:
+ - Inspect column types for factor/numeric and numeric respectively.
+```{r}
+sapply(fac_data_train, class)
+sapply(data_train, class)
+```
+
+Act:
+ - No action required at this time
+
+REFLECTIONS
+
+Reflections on Data Cleaning - following up on notes in actions sections above.
+
+Factor Variables:
+Factor variable will be a significant role in model building and testing. There are common challenges to working with factor variables:
+ - Too many levels
+ - Inbalance in occurance of levels (relative occurance is inbalanced)
+ - Masked levels
+ - Encoding constraints based on modeling technique/tools used
+It may become apparent based on model performance that some or all of the issues above will need to be addressed.
+
+ - NOTE: Strong class inbalance of response variables. May effect model performance given most techniques are designed to minimize error rate and not true positive rate or AUC
+
+DATA MODELING AND ANALYSIS
+
+Plan:
+ - Split training and test sets from data_train for model building and validation
+ - Build and test KNN model
+ - Build and test decision tree model
+ - Build and test logistic regression model
+ - Compute AUC
+
+Do:
+ - Create training and test sets from data_train to support only
+ numeric variables for KNN
+```{r}
+set.seed(2018)
+n_row <- nrow(data_train)
+data_train <- cbind(target_churn, data_train)
+rows <- sample(n_row, n_row*.7)
+train_set <- data_train[rows, ]
+test_set <- data_train[-rows, ]
+```
+
+Do:
+ - Build KNN models for different values of K = {1, 5, 19, 15, 18}
+For K = 1
+
+```{r}
+knnpred <- knn(train_set,test_set,train_set$churn, k = 1)
+A = table(knnpred,test_set$churn)
+A
+TestErrorKNN1 = (A[1,2]+A[2,1])/sum(A)
+TestErrorKNN1
+library(pROC)
+plot.roc(knnpred,test_set$churn)$auc
+```
+For K = 5
+```{r}
+# For K = 5
+knnpred <- knn(train_set,test_set,train_set$churn, k = 5)
+B = table(knnpred,test_set$churn)
+B
+TestErrorKNN5 = (B[1,2]+B[2,1])/sum(B)
+TestErrorKNN5
+plot.roc(knnpred, test_set$churn)$auc
+```
+
+For K = 10
+```{r}
+# For K = 10
+knnpred <- knn(train_set,test_set,train_set$churn, k = 10)
+C = table(knnpred,test_set$churn)
+C
+TestErrorKNN10 = (C[1,2]+C[2,1])/sum(C)
+TestErrorKNN10
+plot.roc(knnpred,test_set$churn)$auc
+```
+
+For K = 15
+```{r}
+# For K = 15
+knnpred <- knn(train_set,test_set,train_set$churn, k = 15)
+D = table(knnpred,test_set$churn)
+D
+TestErrorKNN15 = (D[1,2]+D[2,1])/sum(D)
+TestErrorKNN15
+plot.roc(knnpred,test_set$churn)$auc
+```
+
+For K = 18
+```{r}
+# For K = 18
+knnpred <- knn(train_set,test_set,train_set$churn, k = 18)
+E = table(knnpred,test_set$churn)
+E
+TestErrorKNN18 = (E[1,2]+E[2,1])/sum(E)
+TestErrorKNN18
+plot.roc(knnpred,test_set$churn)$auc
+```
+
+Check:
+ - ROC ws computed for all but K = 18.
+
+Act:
+  - No action required at this time.
+  - K = 18 failed to compute becasue the model failed to predict an positive observations
+
+Do:
+ - Build a decision tree model
+```{r}
+tree_model <- tree(as.factor(churn) ~ ., train_set)
+tree_model
+```
+
+Check:
+ - Results indicate the data does not have enough variation for the decision tree to train on
+ 
+ Act:
+  - Use a more robust variant of decision trees; random forests.
+  
+Do:
+ - Build a random forest model (from above)
+```{r}
+
+forest_model <- randomForest(as.factor(churn) ~ .,  
+                   ntree = 100,
+                   data = train_set)
+
+tree_pred <- predict(forest_model, test_set, type = "class")
+mean(tree_pred != test_set$churn)
+plot.roc(tree_pred,test_set$churn)$auc
+```
+
+Check:
+ - AUC was computed
+ 
+Act:
+ - No action required at this time
+ - NOTE: Next step is to vary forest parameters and prune with cross validation
+ 
+```{r}
+set.seed(2018)
+n_row <- nrow(fac_data_train)
+fac_data_train <- cbind(target_churn, fac_data_train)
+rows <- sample(n_row, n_row*.7)
+fac_train_set <- fac_data_train[rows, ]
+fac_test_set <- fac_data_train[-rows, ]
+```
+
+Do:
+ - Build logistic regressoin model
+```{r}
+log_fit <- glm(churn ~ ., data = train_set, family = binomial)
+summary(log_fit)
+```
+
+```{r}
+log_fit_prob <- predict(log_fit, type = "response")
+head(log_fit_prob)
+log_fit_prob <- as.data.frame(log_fit_prob)
+log_fit_prob$resp <- 0
+log_fit_prob$resp[log_fit_prob$log_fit_prob > .5] <- 1
+log_fit_pred <- cbind(train_set$churn, log_fit_prob)
+table(log_fit_pred$resp, log_fit_pred$`train_set$churn`)
+log_acc <- mean(log_fit_pred$resp == log_fit_pred$`train_set$churn`)
+log_acc
+1 - mean(log_acc)
+plot.roc(log_fit_pred$`train_set$churn`,log_fit_pred$resp)$auc
+```
+
+Check:
+ - The logistic regression model containing all predictors is no better than the null model
+
+ Act:
+  - This deficiancy might be attributable insignificant predictors in the model or class imbalances in the training data.
+  - Use Lasso and ridge regularization methods for variable selection
+  - Use resampling methods to address class imbalances
+
+Do:
+ - Ridge for Logistic Regression Variable Selection
+```{r}
+x <- model.matrix(churn ~., train_set)
+y <- train_set$churn
+grid <- 10^seq(10,-2,length=100)
+rig_log_fit <- glmnet(x, y, alpha = 0, lambda = grid)
+plot(rig_log_fit)
+```
+
+Tune Lambda Parameter with Cross Validation
+```{r}
+rig_cv <- cv.glmnet(x, y, alpha = 0, family = "binomial", lambda = grid)
+plot(rig_cv)
+lambda_opt_rig <- rig_cv$lambda.min
+lambda_opt_rig
+```
+
+```{r}
+x_test <- model.matrix(churn ~., test_set)
+rig_prob <- predict(rig_cv, s = lambda_opt_rig, newx = x_test, type = "response")
+rig_prob <- as.data.frame(rig_prob)
+rig_prob$resp <- 0
+rig_prob$resp[rig_prob$`1` > .5] <- 1
+rig_pred <- cbind(test_set$churn, rig_prob)
+table(rig_pred$resp, rig_pred$`test_set$churn`)
+rig_acc <- mean(rig_pred$resp == rig_pred$`test_set$churn`)
+rig_acc
+1 - mean(rig_acc)
+plot.roc(rig_prob$resp,test_set$churn)$auc
+```
+
+Check:
+ - Unable to compute AUC becuase no positive predicted response classes
+ 
+Act:
+ - Further data cleaning is necessary
+
+Lasso for Logistic Regression Variable Selection
+```{r}
+x <- model.matrix(churn ~., train_set)
+y <- train_set$churn
+grid <- 10^seq(10,-2,length=100)
+lasso_log_fit <- glmnet(x, y, alpha = 1, lambda = grid)
+plot(lasso_log_fit)
+```
+
+Tune Lambda Parameter with Cross Validation
+```{r}
+lasso_cv <- cv.glmnet(x, y, alpha = 1, family = "binomial", lambda = grid)
+plot(lasso_cv)
+lambda_opt <- lasso_cv$lambda.min
+lambda_opt
+```
+
+```{r}
+x_test <- model.matrix(churtesn ~., test_set)
+lasso_prob <- predict(lasso_cv, s = lambda_opt, newx = x_test, type = "response")
+lasso_prob <- as.data.frame(lasso_prob)
+lasso_prob$resp <- 0
+lasso_prob$resp[lasso_prob$`1` > .5] <- 1
+lasso_pred <- cbind(test_set$churn, lasso_prob)
+table(lasso_pred$resp, lasso_pred$`test_set$churn`)
+lasso_acc <- mean(lasso_pred$resp == lasso_pred$`test_set$churn`)
+lasso_acc
+1 - mean(lasso_acc)
+plot.roc(lasso_prob$resp,test_set$churn)$auc
+```
+
+Check:
+ - Unable to compute AUC becuase no positive predicted response classes
+ 
+Act:
+ - Further data cleaning is necessary
+
+MODEL ANALYSIS
+Plan:
+ - Evaluatee initial model performance based on AUC
+ - Iterate on model building and testing based on results
+
+
+
+
+
+
+
+
+
